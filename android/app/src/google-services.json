@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "577840549903",
+    "project_id": "cloodinary9",
+    "storage_bucket": "cloodinary9.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:577840549903:android:20141283bea6d8307bd37a",
+        "android_client_info": {
+          "package_name": "com.example.task_9"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBLwsbhkUstAoJWhyu3sc5CgqBZzug3S0s"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

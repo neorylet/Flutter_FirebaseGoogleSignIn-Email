@@ -1,12 +1,17 @@
-import 'package:flutter/material.dart';
+import 'dart:io';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'crud_service.dart';
+import 'package:flutter/material.dart';
+
 import 'auth_service.dart';
+import 'cloudinary_service.dart';
+import 'crud_service.dart';
 import 'login_page.dart';
 
 class HomePage extends StatelessWidget {
   final bool showFavorites;
   final CrudService service = CrudService();
+  final CloudinaryService cloudinaryService = CloudinaryService();
 
   HomePage({super.key, this.showFavorites = false});
 
@@ -14,7 +19,7 @@ class HomePage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Inventory'),
+        title: const Text('Tubera Inventory'),
         backgroundColor: const Color(0xFF0F766E),
         foregroundColor: Colors.white,
         actions: [
@@ -24,7 +29,8 @@ class HomePage extends StatelessWidget {
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => HomePage(showFavorites: !showFavorites),
+                  builder: (context) =>
+                      HomePage(showFavorites: !showFavorites),
                 ),
               );
             },
@@ -42,7 +48,7 @@ class HomePage extends StatelessWidget {
           ),
         ],
       ),
-      body: StreamBuilder<QuerySnapshot>(
+      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: service.getItems(),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
@@ -53,24 +59,25 @@ class HomePage extends StatelessWidget {
             return const Center(child: CircularProgressIndicator());
           }
 
-          final docs = snapshot.data!.docs;
-
+          final docs = snapshot.data?.docs ?? [];
           final filteredDocs = showFavorites
-              ? docs.where((doc) {
-                  final data = doc.data() as Map<String, dynamic>;
-                  return data['isFavorite'] == true;
-                }).toList()
+              ? docs.where((doc) => doc.data()['isFavorite'] == true).toList()
               : docs;
 
           if (filteredDocs.isEmpty) {
-            return const Center(
+            return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.inventory_2_outlined, size: 64, color: Colors.grey),
-                  SizedBox(height: 16),
-                  Text('No items yet — tap + to add one',
-                      style: TextStyle(color: Colors.grey)),
+                  const Icon(Icons.inventory_2_outlined,
+                      size: 64, color: Colors.grey),
+                  const SizedBox(height: 16),
+                  Text(
+                    showFavorites
+                        ? 'No favorite items yet'
+                        : 'No items yet — tap + to add one',
+                    style: const TextStyle(color: Colors.grey),
+                  ),
                 ],
               ),
             );
@@ -80,27 +87,26 @@ class HomePage extends StatelessWidget {
             itemCount: filteredDocs.length,
             itemBuilder: (context, index) {
               final doc = filteredDocs[index];
-              final data = doc.data() as Map<String, dynamic>;
+              final data = doc.data();
               final name = data['name'] as String? ?? '';
-              final quantity = data['quantity'] as int? ?? 0;
-              final isFavorite = data['isFavorite'] as bool? ?? false;
+              final quantity = (data['quantity'] as num?)?.toInt() ?? 0;
+              final isFavorite = data['isFavorite'] == true;
+              final imageUrl = data['image_url'] as String?;
 
               return Card(
                 elevation: 0,
-                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                margin:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(16),
                 ),
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 child: ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor: const Color(0xFF0F766E),
-                    child: Text(
-                      name.isNotEmpty ? name[0].toUpperCase() : '?',
-                      style: const TextStyle(color: Colors.white),
-                    ),
-                  ),
-                  title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  leading: _buildLeading(context, name, imageUrl),
+                  title: Text(name,
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
                   subtitle: Text('Cnt: $quantity'),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -110,21 +116,32 @@ class HomePage extends StatelessWidget {
                           isFavorite ? Icons.star : Icons.star_border,
                           color: isFavorite ? Colors.amber : Colors.grey,
                         ),
-                        onPressed: () {
-                          service.setFavorite(doc.id, !isFavorite);
+                        onPressed: () async {
+                          try {
+                            await service.setFavorite(doc.id, !isFavorite);
+                          } catch (e) {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                  content:
+                                      Text('Could not update favorite: $e')),
+                            );
+                          }
                         },
                       ),
                       IconButton(
                         icon: const Icon(Icons.edit),
-                        onPressed: () {
-                          _showEditDialog(context, doc.id, name, quantity);
-                        },
+                        onPressed: () => _showItemDialog(
+                          context,
+                          id: doc.id,
+                          name: name,
+                          quantity: quantity,
+                          imageUrl: imageUrl,
+                        ),
                       ),
                       IconButton(
                         icon: const Icon(Icons.delete),
-                        onPressed: () {
-                          _showDeleteDialog(context, doc.id);
-                        },
+                        onPressed: () => _showDeleteDialog(context, doc.id),
                       ),
                     ],
                   ),
@@ -135,7 +152,7 @@ class HomePage extends StatelessWidget {
         },
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showAddDialog(context),
+        onPressed: () => _showItemDialog(context),
         icon: const Icon(Icons.add),
         label: const Text('Add Item'),
         backgroundColor: const Color(0xFF0F766E),
@@ -144,163 +161,303 @@ class HomePage extends StatelessWidget {
     );
   }
 
-  void _showAddDialog(BuildContext context) {
-    final nameController = TextEditingController();
-    final quantityController = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
-          children: [
-            Icon(Icons.add_circle, color: Color(0xFF0F766E)),
-            SizedBox(width: 8),
-            Text('Add Item'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: 'Name',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: quantityController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Quantity',
-                border: OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+  Widget _buildLeading(BuildContext context, String name, String? imageUrl) {
+    final hasImage = imageUrl != null && imageUrl.isNotEmpty;
+    if (hasImage) {
+      return GestureDetector(
+        onTap: () => _showImageDialog(context, imageUrl),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.network(
+            imageUrl,
+            width: 56,
+            height: 56,
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) => _initialAvatar(name),
           ),
-          FilledButton(
-            onPressed: () {
-              final name = nameController.text.trim();
-              final quantity = int.tryParse(quantityController.text) ?? 0;
+        ),
+      );
+    }
+    return _initialAvatar(name);
+  }
 
-              if (name.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Please enter a name')),
-                );
-                return;
-              }
-
-              service.addItem(name, quantity).then((_) {
-                if (!context.mounted) return;
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Item added successfully')),
-                );
-              });
-            },
-            child: const Text('Save'),
-          ),
-        ],
+  Widget _initialAvatar(String name) {
+    return CircleAvatar(
+      backgroundColor: const Color(0xFF0F766E),
+      child: Text(
+        name.isNotEmpty ? name[0].toUpperCase() : '?',
+        style: const TextStyle(color: Colors.white),
       ),
     );
   }
 
-  void _showEditDialog(BuildContext context, String id, String name, int quantity) {
-    final nameController = TextEditingController(text: name);
-    final quantityController = TextEditingController(text: quantity.toString());
-
-    showDialog(
+  void _showImageDialog(BuildContext context, String imageUrl) {
+    showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
+      builder: (dialogContext) => Dialog(
+        insetPadding: const EdgeInsets.all(16),
+        child: Stack(
           children: [
-            Icon(Icons.edit, color: Color(0xFF0F766E)),
-            SizedBox(width: 8),
-            Text('Edit Item'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: 'Name',
-                border: OutlineInputBorder(),
+            InteractiveViewer(
+              child: Image.network(
+                imageUrl,
+                fit: BoxFit.contain,
+                errorBuilder: (_, _, _) => const SizedBox(
+                  height: 200,
+                  child: Center(child: Text('Could not load image')),
+                ),
               ),
             ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: quantityController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Quantity',
-                border: OutlineInputBorder(),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton(
+                icon: const Icon(Icons.close),
+                style: IconButton.styleFrom(
+                  backgroundColor: Colors.black54,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () => Navigator.pop(dialogContext),
               ),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final name = nameController.text.trim();
-              final quantity = int.tryParse(quantityController.text) ?? 0;
+      ),
+    );
+  }
 
-              if (name.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Please enter a name')),
-                );
-                return;
+  Future<void> _showItemDialog(
+    BuildContext context, {
+    String? id,
+    String name = '',
+    int quantity = 0,
+    String? imageUrl,
+  }) async {
+    final nameController = TextEditingController(text: name);
+    final quantityController =
+        TextEditingController(text: id == null ? '' : quantity.toString());
+    File? selectedFile;
+    String? existingImageUrl = imageUrl;
+    bool isSaving = false;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          Future<void> pickImage() async {
+            try {
+              final file = await cloudinaryService.pickImage();
+              if (file != null) {
+                setDialogState(() {
+                  selectedFile = file;
+                });
+              }
+            } catch (e) {
+              if (!dialogContext.mounted) return;
+              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                SnackBar(content: Text('Could not pick image: $e')),
+              );
+            }
+          }
+
+          Future<void> save() async {
+            final trimmedName = nameController.text.trim();
+            final qty = int.tryParse(quantityController.text.trim());
+            if (trimmedName.isEmpty || qty == null || qty < 0) {
+              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                const SnackBar(
+                  content: Text('Enter a non-empty name and valid quantity >= 0.'),
+                ),
+              );
+              return;
+            }
+
+            setDialogState(() {
+              isSaving = true;
+            });
+
+            try {
+              String? uploadedUrl;
+              if (selectedFile != null) {
+                uploadedUrl = await cloudinaryService.uploadImage(selectedFile!);
               }
 
-              service.updateItem(id, name, quantity).then((_) {
-                if (!context.mounted) return;
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Item updated successfully')),
+              if (id == null) {
+                await service.addItem(trimmedName, qty, imageUrl: uploadedUrl);
+              } else {
+                await service.updateItem(
+                  id,
+                  trimmedName,
+                  qty,
+                  imageUrl: uploadedUrl,
                 );
+              }
+
+              if (!dialogContext.mounted) return;
+              Navigator.pop(dialogContext);
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(id == null
+                      ? 'Item added successfully'
+                      : 'Item updated successfully'),
+                ),
+              );
+            } catch (e) {
+              if (!dialogContext.mounted) return;
+              setDialogState(() {
+                isSaving = false;
               });
-            },
-            child: const Text('Save'),
-          ),
-        ],
+              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                SnackBar(content: Text('Could not save item: $e')),
+              );
+            }
+          }
+
+          Widget preview;
+          if (selectedFile != null) {
+            preview = ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.file(
+                selectedFile!,
+                width: 120,
+                height: 120,
+                fit: BoxFit.cover,
+              ),
+            );
+          } else if (existingImageUrl != null && existingImageUrl.isNotEmpty) {
+            preview = ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.network(
+                existingImageUrl,
+                width: 120,
+                height: 120,
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => _imagePlaceholder(),
+              ),
+            );
+          } else {
+            preview = _imagePlaceholder();
+          }
+
+          return AlertDialog(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: Row(
+              children: [
+                Icon(id == null ? Icons.add_circle : Icons.edit,
+                    color: const Color(0xFF0F766E)),
+                const SizedBox(width: 8),
+                Text(id == null ? 'Add Item' : 'Edit Item'),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    enabled: !isSaving,
+                    decoration: const InputDecoration(
+                      labelText: 'Name',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: quantityController,
+                    enabled: !isSaving,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Quantity',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  preview,
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: isSaving ? null : pickImage,
+                    icon: const Icon(Icons.image),
+                    label: Text(selectedFile != null || (existingImageUrl != null && existingImageUrl.isNotEmpty)
+                        ? 'Change Image'
+                        : 'Choose Image'),
+                  ),
+                  if (isSaving) ...[
+                    const SizedBox(height: 12),
+                    const LinearProgressIndicator(),
+                    const SizedBox(height: 8),
+                    const Text('Uploading image to Cloudinary...'),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: isSaving ? null : () => Navigator.pop(dialogContext),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: isSaving ? null : save,
+                child: isSaving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Text(id == null ? 'Save' : 'Update'),
+              ),
+            ],
+          );
+        },
       ),
+    );
+  }
+
+  Widget _imagePlaceholder() {
+    return Container(
+      width: 120,
+      height: 120,
+      decoration: BoxDecoration(
+        color: Colors.grey.shade200,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade400),
+      ),
+      child: const Icon(Icons.image_outlined, size: 40, color: Colors.grey),
     );
   }
 
   void _showDeleteDialog(BuildContext context, String id) {
-    showDialog(
+    showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('Delete Item'),
         content: const Text('Are you sure you want to delete this item?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () {
-              service.deleteItem(id).then((_) {
+            onPressed: () async {
+              try {
+                await service.deleteItem(id);
+                if (!dialogContext.mounted) return;
+                Navigator.pop(dialogContext);
                 if (!context.mounted) return;
-                Navigator.pop(context);
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Item deleted successfully')),
                 );
-              });
+              } catch (e) {
+                if (!dialogContext.mounted) return;
+                Navigator.pop(dialogContext);
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Could not delete item: $e')),
+                );
+              }
             },
             style: FilledButton.styleFrom(backgroundColor: Colors.red),
             child: const Text('Delete'),
